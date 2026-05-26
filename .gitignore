@@ -1,0 +1,9 @@
+__pycache__/
+.deps/
+deps_streamlit/
+video_frames/
+*.log
+*.out.log
+*.err.log
+*.exe
+.streamlit/secrets.toml
