@@ -398,9 +398,15 @@ def calculate_shift_total_production(shift_daily_prod):
     return total
 
 def to_int_or_zero(value):
-    if isinstance(value, (int, float)) and not pd.isna(value):
-        return int(value)
-    return 0
+    try:
+        if pd.isna(value):
+            return 0
+        numeric_value = pd.to_numeric(value, errors="coerce")
+        if pd.isna(numeric_value):
+            return 0
+        return int(numeric_value)
+    except Exception:
+        return 0
 
 def build_schedule_insights(
     schedule_df,
@@ -410,6 +416,7 @@ def build_schedule_insights(
     special_occupy,
     total_exist_capacity,
     existing_shift_count,
+    uph_base,
     material_schedule_enabled,
     material_warnings,
     mode,
@@ -419,7 +426,7 @@ def build_schedule_insights(
         return {}, [], []
 
     date_cols = list(schedule_df.columns[2:])
-    shift_rows = schedule_df[schedule_df["班组/指标"].astype(str).str.contains("班组", na=False)]
+    shift_rows = schedule_df[schedule_df["班组/指标"].astype(str).str.startswith("班组", na=False)]
     old_shift_rows = shift_rows[shift_rows["班组/指标"].astype(str).str.contains("老班组", na=False)]
     new_shift_rows = shift_rows[shift_rows["班组/指标"].astype(str).str.contains("新班组", na=False)]
 
@@ -435,9 +442,27 @@ def build_schedule_insights(
         if qty > 0:
             last_prod_day = col.replace("\n", " ")
 
+    hours_rows = schedule_df[schedule_df["班组/指标"].astype(str) == "单班组单日工时"]
+    if not hours_rows.empty:
+        hours_row = hours_rows.iloc[0]
+        daily_capacity_map = {col: to_int_or_zero(hours_row[col]) * int(uph_base) for col in date_cols}
+    else:
+        daily_capacity_map = {col: 0 for col in date_cols}
+
     old_idle_days = 0
     for col in date_cols:
-        if any(str(row[col]) == "当日放空" for _, row in old_shift_rows.iterrows()):
+        day_capacity = daily_capacity_map.get(col, 0)
+        # 放空只统计非休息日且有排产工时的日期；休息日或 0 工时日期不计入放空。
+        if day_capacity <= 0:
+            continue
+        day_is_idle = False
+        for _, row in old_shift_rows.iterrows():
+            val = row[col]
+            produced_qty = to_int_or_zero(val)
+            if str(val) == "当日放空" or produced_qty < day_capacity:
+                day_is_idle = True
+                break
+        if day_is_idle:
             old_idle_days += 1
 
     material_gap_min = None
@@ -471,7 +496,7 @@ def build_schedule_insights(
         conclusions.append(f"当前方案仅使用老班组，启用老班组 {len(old_shift_rows)} 个。")
 
     if old_idle_days > 0:
-        conclusions.append(f"老班组存在 {old_idle_days} 个非休息日放空/未排满日期，已按当前规则纳入模式判断。")
+        conclusions.append(f"老班组存在 {old_idle_days} 个放空/未排满日期；统计时已排除休息日及 0 工时日期。")
 
     if material_schedule_enabled:
         conclusions.append("本次已按上传的物料交期约束排产，物料到料按 T+1 可用处理。")
@@ -678,11 +703,14 @@ def schedule_engine(
         for shift in shifts_production:
             if shift["is_new"]:
                 continue
+            # 只遍历生产窗口内的工作日；休息日不会进入 production_workday_indices。
             for idx in production_workday_indices:
                 day_capacity = int(daily_shift_capacity[idx])
+                # 自定义为 0 工时的日期视同不可排产，不计入放空。
                 if day_capacity <= 0:
                     continue
                 val = shift["daily_prod"][idx]
+                # 当日标记放空，或实际产出低于当日满工时产能，均计为该日期放空/未排满。
                 if val == "当日放空" or (isinstance(val, (int, float)) and int(val) < day_capacity):
                     idle_days.add(idx)
         return len(idle_days)
@@ -1293,6 +1321,7 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
             special_occupy=special_occupy,
             total_exist_capacity=total_exist_capacity,
             existing_shift_count=existing_shift_count,
+            uph_base=uph_base,
             material_schedule_enabled=material_schedule_enabled,
             material_warnings=material_warnings,
             mode=mode,
