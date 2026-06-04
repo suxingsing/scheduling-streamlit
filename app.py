@@ -1035,6 +1035,8 @@ def schedule_engine(
                 src_capacity = int(daily_shift_capacity[src_day_idx])
                 if src_capacity <= 0:
                     continue
+                if src_qty >= src_capacity:
+                    continue
 
                 remaining_to_move = src_qty
                 placements = []
