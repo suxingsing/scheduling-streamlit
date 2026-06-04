@@ -1136,6 +1136,7 @@ def schedule_engine(
     # ============================
     final_shift_total = 0
     old_material_gap_row = None
+    old_forward_remaining_before_new = production_target
     if demand_gap <= 0:
         run_mode = "减少班组模式（产能过剩，正排逻辑）"
         selected_old_count = existing_shift_count
@@ -1165,11 +1166,20 @@ def schedule_engine(
         shifts_production = selected_shifts
         daily_scheduled = selected_daily
         remaining_demand = selected_remaining
+        old_forward_remaining_before_new = remaining_demand
 
         old_material_gap_row = calc_material_gap_row(daily_scheduled)
         idle_days = count_old_shift_idle_days()
+        if material_enabled and remaining_demand > 0:
+            old_shift_count_after = len(shifts_production)
+            remaining_demand, final_shift_total = add_new_reverse_shifts(remaining_demand, reset_existing=False)
+            if old_shift_count_after and final_shift_total > 0:
+                run_mode = "老班组正排 + 新班组连续倒排模式"
+
         if remaining_demand > 0:
-            message = f"⚠️ 排产未完全覆盖 | {run_mode} | 老班组总产能足够，不启用新班组；受物料交期或生产窗口约束，仍有{remaining_demand:,}件未排完"
+            message = f"⚠️ 排产未完全覆盖 | {run_mode} | 受物料交期或生产窗口约束，仍有{remaining_demand:,}件未排完"
+        elif final_shift_total > 0:
+            message = f"✅ 排产完成 | {run_mode} | 老班组正排存在物料缺口，已启用新班组倒排补足"
         else:
             reduced_count = existing_shift_count - selected_old_count
             message = f"✅ 排产完成 | {run_mode} | 启用老班组{selected_old_count}个，减少{reduced_count}个 | 老班组工作日放空{idle_days}天"
@@ -1185,6 +1195,7 @@ def schedule_engine(
         old_material_gap_row = calc_material_gap_row(daily_scheduled)
         idle_days = count_old_shift_idle_days()
         old_shift_count_after = len(shifts_production)
+        old_forward_remaining_before_new = remaining_demand
         remaining_demand, final_shift_total = add_new_reverse_shifts(remaining_demand, reset_existing=False) if remaining_demand > 0 else (0, 0)
         if old_shift_count_after and final_shift_total > 0:
             run_mode = "老班组正排 + 新班组连续倒排模式"
@@ -1197,8 +1208,9 @@ def schedule_engine(
     if material_enabled:
         compact_old_shift_usage_by_deferring()
         prioritize_old_shifts_and_cap_material()
-        convert_non_continuous_old_shifts_to_new()
-        prioritize_old_shifts_and_cap_material()
+        if old_forward_remaining_before_new > 0:
+            convert_non_continuous_old_shifts_to_new()
+            prioritize_old_shifts_and_cap_material()
 
     # ============================
     # 统计行
