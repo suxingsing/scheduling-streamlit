@@ -928,24 +928,15 @@ def schedule_engine(
                 candidate_shifts[shift_idx]["daily_prod"][day_idx] = "当日放空"
             return actual
 
-        if material_enabled:
-            # 物料约束必须按日期推进：当天排完后才能确定下一天可用物料。
+        # 老班组按班组优先级连续正排：先排满班组1，再排班组2，最后依次处理后续老班组。
+        # 启用物料时，每个班组仍按时间顺序消耗当日可用物料，物料不足才形成放空或尾数。
+        for shift_idx in range(old_shift_count):
+            if remaining <= 0:
+                break
             for day_idx in production_workday_indices:
                 if remaining <= 0:
                     break
-                for shift_idx in range(old_shift_count):
-                    if remaining <= 0:
-                        break
-                    schedule_one_slot(shift_idx, day_idx)
-        else:
-            # 无物料交期时按老班组顺序连续排产：先排满班组1，再排班组2、班组3。
-            for shift_idx in range(old_shift_count):
-                if remaining <= 0:
-                    break
-                for day_idx in production_workday_indices:
-                    if remaining <= 0:
-                        break
-                    schedule_one_slot(shift_idx, day_idx)
+                schedule_one_slot(shift_idx, day_idx)
 
         return candidate_shifts, daily_scheduled[:], remaining
 
@@ -966,31 +957,8 @@ def schedule_engine(
         old_shifts = [shift for shift in shifts_production if not shift["is_new"]]
         new_shifts = [shift for shift in shifts_production if shift["is_new"]]
 
-        # 同一天内，老班组未满产时优先承接新班组产量；新班组只补老班组吃不下的量。
-        for day_idx in production_workday_indices:
-            day_capacity = int(daily_shift_capacity[day_idx])
-            if day_capacity <= 0:
-                continue
-            for old_shift in old_shifts:
-                old_qty = numeric_prod(old_shift["daily_prod"][day_idx])
-                old_room = max(0, day_capacity - old_qty)
-                while old_room > 0:
-                    donor = None
-                    for new_shift in reversed(new_shifts):
-                        if numeric_prod(new_shift["daily_prod"][day_idx]) > 0:
-                            donor = new_shift
-                            break
-                    if donor is None:
-                        break
-                    donor_qty = numeric_prod(donor["daily_prod"][day_idx])
-                    move_qty = min(old_room, donor_qty)
-                    old_qty += move_qty
-                    donor_qty -= move_qty
-                    set_shift_day_value(old_shift, day_idx, old_qty)
-                    set_shift_day_value(donor, day_idx, donor_qty)
-                    old_room -= move_qty
-
         # 物料硬约束：任何一天总排产不能超过当天可用物料，超出部分优先从新班组扣回。
+        # 不再把新班组爬坡产量搬回老班组，否则会破坏新班组启动日必须产出的规则。
         available_qty = int(material_initial_stock) if material_enabled else 10**18
         for day_idx in range(total_days):
             day_total = sum(numeric_prod(shift["daily_prod"][day_idx]) for shift in shifts_production)
@@ -1098,7 +1066,15 @@ def schedule_engine(
         old_shifts = [shift for shift in shifts_production if not shift["is_new"]]
         first_convert_idx = None
         for idx, shift in enumerate(old_shifts[2:], start=2):
-            if count_shift_idle_days(shift, active_window_only=True) >= 7:
+            active_indices = [
+                day_idx for day_idx in production_workday_indices
+                if numeric_prod(shift["daily_prod"][day_idx]) > 0
+            ]
+            if not active_indices:
+                continue
+            starts_after_first_workday = active_indices[0] > production_workday_indices[0]
+            idle_days = count_shift_idle_days(shift, active_window_only=True)
+            if starts_after_first_workday or idle_days >= 7:
                 first_convert_idx = idx
                 break
         if first_convert_idx is None:
