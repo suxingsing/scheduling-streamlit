@@ -1104,6 +1104,31 @@ def schedule_engine(
             )
         return converted_count, converted_qty, remaining_after_new
 
+    def top_up_unfinished_target_with_new_shifts():
+        nonlocal remaining_demand, final_shift_total, run_mode, message
+
+        produced_qty = sum(int(v) for v in daily_scheduled)
+        shortage_qty = max(0, int(production_target) - int(produced_qty))
+        if shortage_qty <= 0:
+            remaining_demand = 0
+            return 0, 0
+
+        remaining_after_new, new_total = add_new_reverse_shifts(shortage_qty, reset_existing=False)
+        final_shift_total += new_total
+        remaining_demand = remaining_after_new
+
+        if new_total > 0:
+            run_mode = "老班组顺序正排 + 新班组爬坡倒排模式"
+            if remaining_after_new > 0:
+                message = (
+                    f"⚠️ 排产未完全覆盖 | {run_mode} | 已按新班组补排{new_total:,}件，"
+                    f"仍有{remaining_after_new:,}件受物料交期或生产窗口限制未排完"
+                )
+            else:
+                message = f"✅ 排产完成 | {run_mode} | 已用新班组补足剩余需求"
+
+        return remaining_after_new, new_total
+
     # 产能计算
     capacity_1_shift_full = sum(int(daily_shift_capacity[idx]) for idx in production_workday_indices)
     total_exist_capacity = capacity_1_shift_full * existing_shift_count
@@ -1191,6 +1216,10 @@ def schedule_engine(
         compact_old_shift_usage_by_deferring()
         prioritize_old_shifts_and_cap_material()
         convert_non_continuous_old_shifts_to_new()
+        prioritize_old_shifts_and_cap_material()
+        top_up_unfinished_target_with_new_shifts()
+        prioritize_old_shifts_and_cap_material()
+        top_up_unfinished_target_with_new_shifts()
         prioritize_old_shifts_and_cap_material()
     normalize_shift_idle_display()
 
@@ -1293,6 +1322,7 @@ def schedule_engine(
     if produced_total < production_target:
         shortage = production_target - produced_total
         material_warnings.append(f"当前物料交期约束下仍有 {shortage:,} 件未排完，请补充到料、增加产能或延长周期。")
+        message = f"⚠️ 排产未完全覆盖 | {run_mode} | 当前仍有{shortage:,}件未排完"
 
     schedule_df = pd.DataFrame(rows, columns=columns)
     return schedule_df, message, run_mode, production_target, total_workdays, default_single_shift_daily, total_exist_capacity, production_end_date, final_shift_total, material_warnings
