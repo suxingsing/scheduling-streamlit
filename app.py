@@ -1104,17 +1104,27 @@ def schedule_engine(
             )
         return converted_count, converted_qty, remaining_after_new
 
-    def top_up_unfinished_target_with_new_shifts():
+    def rebuild_new_shifts_to_target():
         nonlocal remaining_demand, final_shift_total, run_mode, message
 
-        produced_qty = sum(int(v) for v in daily_scheduled)
-        shortage_qty = max(0, int(production_target) - int(produced_qty))
-        if shortage_qty <= 0:
+        old_shifts = [shift for shift in shifts_production if not shift["is_new"]]
+        old_daily = [
+            sum(numeric_prod(shift["daily_prod"][day_idx]) for shift in old_shifts)
+            for day_idx in range(total_days)
+        ]
+        old_total = sum(int(v) for v in old_daily)
+        new_target_qty = max(0, int(production_target) - int(old_total))
+
+        shifts_production[:] = old_shifts
+        daily_scheduled[:] = old_daily
+        final_shift_total = 0
+
+        if new_target_qty <= 0:
             remaining_demand = 0
             return 0, 0
 
-        remaining_after_new, new_total = add_new_reverse_shifts(shortage_qty, reset_existing=False)
-        final_shift_total += new_total
+        remaining_after_new, new_total = add_new_reverse_shifts(new_target_qty, reset_existing=False)
+        final_shift_total = new_total
         remaining_demand = remaining_after_new
 
         if new_total > 0:
@@ -1217,9 +1227,7 @@ def schedule_engine(
         prioritize_old_shifts_and_cap_material()
         convert_non_continuous_old_shifts_to_new()
         prioritize_old_shifts_and_cap_material()
-        top_up_unfinished_target_with_new_shifts()
-        prioritize_old_shifts_and_cap_material()
-        top_up_unfinished_target_with_new_shifts()
+        rebuild_new_shifts_to_target()
         prioritize_old_shifts_and_cap_material()
     normalize_shift_idle_display()
 
@@ -1275,6 +1283,9 @@ def schedule_engine(
     for shift in shifts_production:
         if not is_shift_empty(shift["daily_prod"]):
             final_shifts.append(shift)
+    for display_no, shift in enumerate(final_shifts, start=1):
+        shift_type = "新班组-连续倒排" if shift["is_new"] else "老班组-连续正排"
+        shift["name"] = f"班组{display_no}({shift_type})"
     final_shift_total = sum(
         numeric_prod(shift["daily_prod"][day_idx])
         for shift in final_shifts
