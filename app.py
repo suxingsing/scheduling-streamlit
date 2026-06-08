@@ -1097,7 +1097,7 @@ def schedule_engine(
 
         old_shifts = [shift for shift in shifts_production if not shift["is_new"]]
         first_convert_idx = None
-        for idx, shift in enumerate(old_shifts):
+        for idx, shift in enumerate(old_shifts[2:], start=2):
             if count_shift_idle_days(shift, active_window_only=True) >= 7:
                 first_convert_idx = idx
                 break
@@ -1155,7 +1155,6 @@ def schedule_engine(
     # ============================
     final_shift_total = 0
     old_material_gap_row = None
-    old_forward_remaining_before_new = production_target
     if demand_gap <= 0:
         run_mode = "减少班组模式（产能过剩，正排逻辑）"
         selected_old_count = existing_shift_count
@@ -1185,7 +1184,6 @@ def schedule_engine(
         shifts_production = selected_shifts
         daily_scheduled = selected_daily
         remaining_demand = selected_remaining
-        old_forward_remaining_before_new = remaining_demand
 
         old_material_gap_row = calc_material_gap_row(daily_scheduled)
         idle_days = count_old_shift_idle_days()
@@ -1214,7 +1212,6 @@ def schedule_engine(
         old_material_gap_row = calc_material_gap_row(daily_scheduled)
         idle_days = count_old_shift_idle_days()
         old_shift_count_after = len(shifts_production)
-        old_forward_remaining_before_new = remaining_demand
         remaining_demand, final_shift_total = add_new_reverse_shifts(remaining_demand, reset_existing=False) if remaining_demand > 0 else (0, 0)
         if old_shift_count_after and final_shift_total > 0:
             run_mode = "老班组正排 + 新班组连续倒排模式"
@@ -1227,9 +1224,8 @@ def schedule_engine(
     if material_enabled:
         compact_old_shift_usage_by_deferring()
         prioritize_old_shifts_and_cap_material()
-        if old_forward_remaining_before_new > 0:
-            convert_non_continuous_old_shifts_to_new()
-            prioritize_old_shifts_and_cap_material()
+        convert_non_continuous_old_shifts_to_new()
+        prioritize_old_shifts_and_cap_material()
         normalize_old_shift_idle_display()
 
     # ============================
