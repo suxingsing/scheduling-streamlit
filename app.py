@@ -1073,6 +1073,25 @@ def schedule_engine(
             for day_idx in range(total_days)
         ]
 
+    def normalize_old_shift_idle_display():
+        old_shifts = [shift for shift in shifts_production if not shift["is_new"]]
+        for shift in old_shifts:
+            active_indices = [
+                idx for idx in production_workday_indices
+                if numeric_prod(shift["daily_prod"][idx]) > 0
+            ]
+            if not active_indices:
+                continue
+            first_idx = active_indices[0]
+            last_idx = active_indices[-1]
+            for day_idx in production_workday_indices:
+                if day_idx < first_idx or day_idx > last_idx:
+                    continue
+                if int(daily_shift_capacity[day_idx]) <= 0:
+                    continue
+                if str(shift["daily_prod"][day_idx]).strip() == "":
+                    shift["daily_prod"][day_idx] = "当日放空"
+
     def convert_non_continuous_old_shifts_to_new():
         nonlocal daily_scheduled, remaining_demand, final_shift_total, run_mode, message
 
@@ -1211,6 +1230,7 @@ def schedule_engine(
         if old_forward_remaining_before_new > 0:
             convert_non_continuous_old_shifts_to_new()
             prioritize_old_shifts_and_cap_material()
+        normalize_old_shift_idle_display()
 
     # ============================
     # 统计行
