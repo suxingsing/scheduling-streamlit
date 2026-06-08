@@ -785,8 +785,8 @@ def schedule_engine(
             if day_capacity <= 0:
                 continue
             val = shift["daily_prod"][idx]
-            # 活跃窗口内的空白、当日放空、未满产，均视为该班组连续性中断。
-            if active_window_only and str(val).strip() == "":
+            # 空白、当日放空、未满产，均计为该班组工作日放空。
+            if str(val).strip() == "":
                 idle_days += 1
             elif val == "当日放空" or (isinstance(val, (int, float)) and int(val) < day_capacity):
                 idle_days += 1
@@ -1041,19 +1041,16 @@ def schedule_engine(
             for day_idx in range(total_days)
         ]
 
-    def normalize_old_shift_idle_display():
-        old_shifts = [shift for shift in shifts_production if not shift["is_new"]]
-        for shift in old_shifts:
+    def normalize_shift_idle_display():
+        for shift in shifts_production:
             active_indices = [
                 idx for idx in production_workday_indices
                 if numeric_prod(shift["daily_prod"][idx]) > 0
             ]
             if not active_indices:
                 continue
-            first_idx = active_indices[0]
-            last_idx = active_indices[-1]
             for day_idx in production_workday_indices:
-                if day_idx < first_idx or day_idx > last_idx:
+                if day_idx < active_indices[0] or day_idx > active_indices[-1]:
                     continue
                 if int(daily_shift_capacity[day_idx]) <= 0:
                     continue
@@ -1202,7 +1199,7 @@ def schedule_engine(
         prioritize_old_shifts_and_cap_material()
         convert_non_continuous_old_shifts_to_new()
         prioritize_old_shifts_and_cap_material()
-        normalize_old_shift_idle_display()
+    normalize_shift_idle_display()
 
     # ============================
     # 统计行
