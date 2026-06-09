@@ -723,6 +723,9 @@ def schedule_engine(
         material_plan, invalid_material_rows = parse_material_plan(material_plan_df)
         material_arrivals = [int(material_plan.get(d, 0)) for d in full_date_list]
         ignored_material_dates = sorted(d for d in material_plan if d not in set(full_date_list))
+        material_total_available = max(0, int(material_initial_stock)) + sum(max(0, int(qty)) for qty in material_arrivals)
+        if material_total_available < int(production_target):
+            production_target = int(material_total_available)
     else:
         invalid_material_rows = 0
         material_arrivals = [0] * total_days
@@ -1417,7 +1420,7 @@ def schedule_engine(
             if shift["daily_prod"][day_idx] == "当日放空":
                 shift["daily_prod"][day_idx] = ""
 
-    # 显示层标记：需求已满足后，该班组后续第一个有效工作日显示释放，不再按放空展示。
+    # 显示层标记：班组后续不再生产时，只在第一个有效工作日标记释放。
     for shift in final_shifts:
         produced_indices = [
             idx for idx, val in enumerate(shift["daily_prod"])
@@ -1426,15 +1429,16 @@ def schedule_engine(
         if not produced_indices:
             continue
         last_prod_idx = produced_indices[-1]
-        if int(cumulative_row[last_prod_idx + 1]) < int(production_target):
-            continue
+        release_marked = False
         for day_idx in range(last_prod_idx + 1, total_days):
             if not date_workday_flag[day_idx] or int(daily_shift_capacity[day_idx]) <= 0:
                 continue
             current_val = shift["daily_prod"][day_idx]
-            if str(current_val).strip() == "" or current_val == "当日放空":
+            if not release_marked and (str(current_val).strip() == "" or current_val == "当日放空"):
                 shift["daily_prod"][day_idx] = "班组释放"
-            break
+                release_marked = True
+            elif release_marked and current_val == "当日放空":
+                shift["daily_prod"][day_idx] = ""
 
     final_shift_total = sum(
         numeric_prod(shift["daily_prod"][day_idx])
