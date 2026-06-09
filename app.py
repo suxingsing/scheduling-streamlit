@@ -1122,6 +1122,42 @@ def schedule_engine(
         remaining_demand = remaining_qty
         return filled_qty
 
+    def fill_old_shifts_forward_to_target():
+        nonlocal daily_scheduled, remaining_demand
+
+        old_shifts = [shift for shift in shifts_production if not shift["is_new"]]
+        remaining_qty = max(0, int(production_target) - sum(int(v) for v in daily_scheduled))
+        if remaining_qty <= 0 or not old_shifts:
+            remaining_demand = remaining_qty
+            return 0
+
+        filled_qty = 0
+        for day_idx in production_workday_indices:
+            if remaining_qty <= 0:
+                break
+            day_capacity = int(daily_shift_capacity[day_idx])
+            if day_capacity <= 0:
+                continue
+            available_qty = available_material_for_day(day_idx)
+            if available_qty <= 0:
+                continue
+            for shift in old_shifts:
+                if remaining_qty <= 0 or available_qty <= 0:
+                    break
+                current_qty = numeric_prod(shift["daily_prod"][day_idx])
+                room = max(0, day_capacity - current_qty)
+                if room <= 0:
+                    continue
+                add_qty = min(room, available_qty, remaining_qty)
+                set_shift_day_value(shift, day_idx, current_qty + add_qty)
+                daily_scheduled[day_idx] += int(add_qty)
+                available_qty -= int(add_qty)
+                remaining_qty -= int(add_qty)
+                filled_qty += int(add_qty)
+
+        remaining_demand = remaining_qty
+        return filled_qty
+
     def normalize_shift_idle_display():
         for shift in shifts_production:
             if is_shift_empty(shift["daily_prod"]):
@@ -1191,12 +1227,12 @@ def schedule_engine(
             sum(numeric_prod(shift["daily_prod"][day_idx]) for shift in old_shifts)
             for day_idx in range(total_days)
         ]
-        old_total = sum(int(v) for v in old_daily)
-        new_target_qty = max(0, int(production_target) - int(old_total))
-
         shifts_production[:] = old_shifts
         daily_scheduled[:] = old_daily
         final_shift_total = 0
+        fill_old_shifts_forward_to_target()
+        old_total = sum(int(v) for v in daily_scheduled)
+        new_target_qty = max(0, int(production_target) - int(old_total))
 
         if new_target_qty <= 0:
             remaining_demand = 0
@@ -1302,8 +1338,6 @@ def schedule_engine(
 
     prioritize_old_shifts_and_cap_material()
     if material_enabled:
-        compact_old_shift_usage_by_deferring()
-        prioritize_old_shifts_and_cap_material()
         top_up_unfinished_target_with_old_shifts()
         prioritize_old_shifts_and_cap_material()
         convert_non_continuous_old_shifts_to_new()
@@ -1367,6 +1401,21 @@ def schedule_engine(
     for display_no, shift in enumerate(final_shifts, start=1):
         shift_type = "新班组-连续倒排" if shift["is_new"] else "老班组-连续正排"
         shift["name"] = f"班组{display_no}({shift_type})"
+
+    # 新班组启动前不视为放空；第一天实际生产之前保持空白。
+    for shift in final_shifts:
+        if not shift["is_new"]:
+            continue
+        produced_indices = [
+            idx for idx, val in enumerate(shift["daily_prod"])
+            if isinstance(val, (int, float)) and int(val) > 0
+        ]
+        if not produced_indices:
+            continue
+        first_prod_idx = produced_indices[0]
+        for day_idx in range(first_prod_idx):
+            if shift["daily_prod"][day_idx] == "当日放空":
+                shift["daily_prod"][day_idx] = ""
 
     # 显示层标记：需求已满足后，该班组后续第一个有效工作日显示释放，不再按放空展示。
     for shift in final_shifts:
@@ -2193,15 +2242,16 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
     st.markdown(f"- **周期有效工作日**：{total_workdays}天")
     st.markdown(f"- **需求最终截止日**：{demand_end_date.month}月{demand_end_date.day}日")
     st.markdown(f"- **生产必须完成截止日**：{production_end_date.month}月{production_end_date.day}日（提前{lead_time_days}个自然日，包含休息日）")
-    st.markdown(f"- **当前运行模式**：{mode}")
     st.divider()
 
     if mode == "small_gap":
-        st.warning(message)
+        st.warning("排产未完全覆盖")
     elif "错误" in message:
-        st.error(message)
+        st.error("排产错误")
+    elif "未完全覆盖" in message:
+        st.warning("排产未完全覆盖")
     else:
-        st.success(message)
+        st.success("排产完成")
         insight_summary, conclusions, suggestions = build_schedule_insights(
             schedule_df=schedule_df,
             production_target=production_target,
