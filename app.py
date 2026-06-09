@@ -1353,6 +1353,26 @@ def schedule_engine(
     for display_no, shift in enumerate(final_shifts, start=1):
         shift_type = "新班组-连续倒排" if shift["is_new"] else "老班组-连续正排"
         shift["name"] = f"班组{display_no}({shift_type})"
+
+    # 显示层标记：需求已满足后，该班组后续第一个有效工作日显示释放，不再按放空展示。
+    for shift in final_shifts:
+        produced_indices = [
+            idx for idx, val in enumerate(shift["daily_prod"])
+            if isinstance(val, (int, float)) and int(val) > 0
+        ]
+        if not produced_indices:
+            continue
+        last_prod_idx = produced_indices[-1]
+        if int(cumulative_row[last_prod_idx + 1]) < int(production_target):
+            continue
+        for day_idx in range(last_prod_idx + 1, total_days):
+            if not date_workday_flag[day_idx] or int(daily_shift_capacity[day_idx]) <= 0:
+                continue
+            current_val = shift["daily_prod"][day_idx]
+            if str(current_val).strip() == "" or current_val == "当日放空":
+                shift["daily_prod"][day_idx] = "班组释放"
+            break
+
     final_shift_total = sum(
         numeric_prod(shift["daily_prod"][day_idx])
         for shift in final_shifts
@@ -1478,11 +1498,8 @@ st.markdown(
     .material-status-spacer {
         height: 16px;
     }
-    .material-delete-note {
-        margin-top: 8px;
-        color: #667085;
-        font-size: 12px;
-        line-height: 1.45;
+    div[data-testid="stButton"] > button {
+        white-space: nowrap;
     }
     div[data-testid="stDownloadButton"] > button {
         width: 100%;
@@ -1992,17 +2009,12 @@ with main_col:
                             label_visibility="collapsed",
                         )
                         if uploaded_material_file is not None:
-                            delete_col, hint_col = st.columns([0.34, 0.66], gap="small")
+                            spacer_col, delete_col = st.columns([0.68, 0.32], gap="small")
                             with delete_col:
                                 delete_uploaded_material = st.button(
-                                    "删除当前文件",
+                                    "删除文件",
                                     key=f"delete_material_upload_{st.session_state.material_upload_nonce}",
                                     use_container_width=True,
-                                )
-                            with hint_col:
-                                st.markdown(
-                                    "<div class='material-delete-note'>删除后可重新上传正确的物料交期 Excel。</div>",
-                                    unsafe_allow_html=True,
                                 )
                             if delete_uploaded_material:
                                 st.session_state.material_upload_nonce += 1
