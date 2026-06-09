@@ -687,6 +687,9 @@ def schedule_engine(
 ):
     # 生产总目标
     production_target = max(total_demand + special_occupy - initial_stock, 0)
+    original_production_target = int(production_target)
+    material_limited_by_total = False
+    material_shortage_qty = 0
     default_single_shift_daily = uph_base * work_hours
 
     if production_target == 0:
@@ -725,6 +728,8 @@ def schedule_engine(
         ignored_material_dates = sorted(d for d in material_plan if d not in set(full_date_list))
         material_total_available = max(0, int(material_initial_stock)) + sum(max(0, int(qty)) for qty in material_arrivals)
         if material_total_available < int(production_target):
+            material_limited_by_total = True
+            material_shortage_qty = max(0, original_production_target - int(material_total_available))
             production_target = int(material_total_available)
     else:
         invalid_material_rows = 0
@@ -1483,6 +1488,8 @@ def schedule_engine(
     if material_enabled and ignored_material_dates:
         preview = "、".join(f"{d.month}/{d.day}" for d in ignored_material_dates[:5])
         material_warnings.append(f"有 {len(ignored_material_dates)} 个到料日期不在排程周期内，已忽略：{preview}")
+    if material_enabled and material_limited_by_total and material_shortage_qty > 0:
+        material_warnings.append(f"物料总量低于需求，缺少 {material_shortage_qty:,} 件物料；已按当前物料上限排产。")
     produced_total = sum(daily_total)
     if material_enabled and not any(not is_shift_empty(shift["daily_prod"]) for shift in shifts_production if shift["is_new"]):
         if produced_total >= production_target:
@@ -1494,9 +1501,13 @@ def schedule_engine(
                 run_mode = "场景三：物料间歇缺口，保留老班组放空并后续补产"
                 message = f"✅ 排产完成 | {run_mode}"
     if produced_total < production_target:
-        shortage = production_target - produced_total
-        material_warnings.append(f"当前物料交期约束下仍有 {shortage:,} 件未排完，请补充到料、增加产能或延长周期。")
-        message = f"⚠️ 排产未完全覆盖 | {run_mode} | 当前仍有{shortage:,}件未排完"
+        if material_enabled and material_limited_by_total:
+            production_target = int(produced_total)
+            message = f"✅ 排产完成 | 物料总量低于需求，已按可排物料上限输出"
+        else:
+            shortage = production_target - produced_total
+            material_warnings.append(f"当前物料交期约束下仍有 {shortage:,} 件未排完，请补充到料、增加产能或延长周期。")
+            message = f"⚠️ 排产未完全覆盖 | {run_mode} | 当前仍有{shortage:,}件未排完"
 
     schedule_df = pd.DataFrame(rows, columns=columns)
     return schedule_df, message, run_mode, production_target, total_workdays, default_single_shift_daily, total_exist_capacity, production_end_date, final_shift_total, material_warnings
