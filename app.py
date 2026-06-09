@@ -476,6 +476,8 @@ def build_schedule_insights(
     planned_output = sum(daily_totals)
     shortage = max(int(production_target) - planned_output, 0)
     surplus = max(planned_output - int(production_target), 0)
+    original_required_output = max(int(total_demand) + int(special_occupy) - int(initial_stock), 0)
+    material_shortage_qty = max(original_required_output - int(production_target), 0) if material_schedule_enabled else 0
 
     last_prod_day = "无"
     for col, qty in zip(date_cols, daily_totals):
@@ -518,6 +520,7 @@ def build_schedule_insights(
         "last_prod_day": last_prod_day,
         "old_idle_days": old_idle_days,
         "material_gap_min": material_gap_min,
+        "material_shortage_qty": material_shortage_qty,
     }
 
     conclusions = []
@@ -1427,6 +1430,8 @@ def schedule_engine(
 
     # 显示层标记：班组后续不再生产时，只在第一个有效工作日标记释放。
     for shift in final_shifts:
+        if shift["is_new"]:
+            continue
         produced_indices = [
             idx for idx, val in enumerate(shift["daily_prod"])
             if isinstance(val, (int, float)) and int(val) > 0
@@ -2284,7 +2289,9 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
             st.markdown("### 排产结论与建议")
             metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
             metric_col1.metric("计划产出", f"{insight_summary['planned_output']:,}")
-            if insight_summary["shortage"] > 0:
+            if insight_summary.get("material_shortage_qty", 0) > 0:
+                metric_col2.metric("物料差额", f"缺少 {insight_summary['material_shortage_qty']:,}")
+            elif insight_summary["shortage"] > 0:
                 metric_col2.metric("目标差异", f"缺口 {insight_summary['shortage']:,}")
             else:
                 metric_col2.metric("目标差异", f"余量 {insight_summary['surplus']:,}")
