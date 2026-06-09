@@ -1478,6 +1478,12 @@ st.markdown(
     .material-status-spacer {
         height: 16px;
     }
+    .material-delete-note {
+        margin-top: 8px;
+        color: #667085;
+        font-size: 12px;
+        line-height: 1.45;
+    }
     div[data-testid="stDownloadButton"] > button {
         width: 100%;
         min-height: 104px;
@@ -1955,6 +1961,8 @@ with main_col:
         if material_enabled:
             default_material_initial_stock = 0
             material_initial_stock = int(default_material_initial_stock)
+            if "material_upload_nonce" not in st.session_state:
+                st.session_state.material_upload_nonce = 0
 
             if date_period_ready:
                 material_template = build_material_template(
@@ -1980,9 +1988,25 @@ with main_col:
                         uploaded_material_file = st.file_uploader(
                             "上传已填写的物料交期Excel",
                             type=["xlsx", "xls"],
-                            key="material_upload",
+                            key=f"material_upload_{st.session_state.material_upload_nonce}",
                             label_visibility="collapsed",
                         )
+                        if uploaded_material_file is not None:
+                            delete_col, hint_col = st.columns([0.34, 0.66], gap="small")
+                            with delete_col:
+                                delete_uploaded_material = st.button(
+                                    "删除当前文件",
+                                    key=f"delete_material_upload_{st.session_state.material_upload_nonce}",
+                                    use_container_width=True,
+                                )
+                            with hint_col:
+                                st.markdown(
+                                    "<div class='material-delete-note'>删除后可重新上传正确的物料交期 Excel。</div>",
+                                    unsafe_allow_html=True,
+                                )
+                            if delete_uploaded_material:
+                                st.session_state.material_upload_nonce += 1
+                                st.rerun()
                     st.markdown("<div class='material-action-spacer'></div>", unsafe_allow_html=True)
                     st.markdown("<div class='material-section-title'>到料规则</div>", unsafe_allow_html=True)
                     st.markdown("<div class='material-muted'>排产前按自然日偏移核算可用物料</div>", unsafe_allow_html=True)
