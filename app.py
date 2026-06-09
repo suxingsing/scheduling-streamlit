@@ -2289,8 +2289,6 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
                     st.markdown(f"- {item}")
             with suggestion_col:
                 st.markdown("**建议**")
-                if can_optimize:
-                    st.markdown(f"- {optimize_suggest.strip()}")
                 for item in suggestions:
                     st.markdown(f"- {item}")
             st.divider()
