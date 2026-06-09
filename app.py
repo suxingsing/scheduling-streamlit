@@ -2290,7 +2290,7 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
             metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
             metric_col1.metric("计划产出", f"{insight_summary['planned_output']:,}")
             if insight_summary.get("material_shortage_qty", 0) > 0:
-                metric_col2.metric("物料差额", f"缺少 {insight_summary['material_shortage_qty']:,}")
+                metric_col2.metric("需求差额", f"缺少 {insight_summary['material_shortage_qty']:,}")
             elif insight_summary["shortage"] > 0:
                 metric_col2.metric("目标差异", f"缺口 {insight_summary['shortage']:,}")
             else:
