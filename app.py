@@ -841,9 +841,16 @@ def schedule_engine(
 
     def count_idle_before_completion(shift, scheduled_snapshot):
         completion_idx = target_completion_day(scheduled_snapshot)
+        produced_indices = [
+            idx for idx in production_workday_indices
+            if idx <= completion_idx
+            and isinstance(shift["daily_prod"][idx], (int, float))
+            and int(shift["daily_prod"][idx]) > 0
+        ]
+        last_relevant_idx = produced_indices[-1] if produced_indices else completion_idx
         idle_days = 0
         for day_idx in production_workday_indices:
-            if day_idx > completion_idx:
+            if day_idx > last_relevant_idx:
                 break
             day_capacity = int(daily_shift_capacity[day_idx])
             if day_capacity <= 0:
@@ -983,12 +990,12 @@ def schedule_engine(
                 candidate_shifts[shift_idx]["daily_prod"][day_idx] = "当日放空"
             return actual
 
-        # 老班组按班组优先级连续正排：先排满班组1，再排班组2，最后依次处理后续老班组。
-        # 启用物料时，每个班组仍按时间顺序消耗当日可用物料，物料不足才形成放空或尾数。
-        for shift_idx in range(old_shift_count):
+        # 老班组按日期正排：每天先排满班组1，再排班组2，最后依次处理后续老班组。
+        # 这样物料足够时，多个老班组从月初同步满产；物料不足时仍优先保证前序班组。
+        for day_idx in production_workday_indices:
             if remaining <= 0:
                 break
-            for day_idx in production_workday_indices:
+            for shift_idx in range(old_shift_count):
                 if remaining <= 0:
                     break
                 schedule_one_slot(shift_idx, day_idx)
