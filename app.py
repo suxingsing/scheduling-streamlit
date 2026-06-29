@@ -475,7 +475,6 @@ def build_schedule_insights(
         daily_totals.append(sum(to_int_or_zero(row[col]) for _, row in shift_rows.iterrows()))
     planned_output = sum(daily_totals)
     shortage = max(int(production_target) - planned_output, 0)
-    surplus = max(planned_output - int(production_target), 0)
     original_required_output = max(int(total_demand) + int(special_occupy) - int(initial_stock), 0)
     material_shortage_qty = max(original_required_output - int(production_target), 0) if material_schedule_enabled else 0
 
@@ -514,7 +513,6 @@ def build_schedule_insights(
     summary = {
         "planned_output": planned_output,
         "shortage": shortage,
-        "surplus": surplus,
         "old_shift_count": len(old_shift_rows),
         "new_shift_count": len(new_shift_rows),
         "last_prod_day": last_prod_day,
@@ -528,8 +526,6 @@ def build_schedule_insights(
         conclusions.append(f"本次排产未完全覆盖目标，还差 {shortage:,} 件。")
     else:
         conclusions.append(f"本次排产可覆盖目标，计划产出 {planned_output:,} 件，目标 {int(production_target):,} 件。")
-        if surplus > 0:
-            conclusions.append(f"排产结果存在 {surplus:,} 件余量，主要来自班组产能粒度或爬坡排产边界。")
 
     if len(new_shift_rows) > 0:
         conclusions.append(f"系统启用了 {len(new_shift_rows)} 个新班组，新班组按爬坡曲线进行连续倒排。")
@@ -550,7 +546,7 @@ def build_schedule_insights(
     elif "新班组" in mode:
         suggestions.append("建议复核新增班组的人员到位时间和爬坡比例，确认倒排启动日期可执行。")
     elif total_exist_capacity > production_target:
-        suggestions.append("现有产能覆盖需求，可关注是否存在可减少班组或降低加班的空间。")
+        suggestions.append("当前目标已覆盖，可按业务需要复核班组启用数量或加班安排。")
 
     if old_idle_days >= 7:
         suggestions.append("老班组工作日放空天数达到 7 天，建议复核需求节奏、物料交期或减班策略。")
@@ -841,16 +837,9 @@ def schedule_engine(
 
     def count_idle_before_completion(shift, scheduled_snapshot):
         completion_idx = target_completion_day(scheduled_snapshot)
-        produced_indices = [
-            idx for idx in production_workday_indices
-            if idx <= completion_idx
-            and isinstance(shift["daily_prod"][idx], (int, float))
-            and int(shift["daily_prod"][idx]) > 0
-        ]
-        last_relevant_idx = produced_indices[-1] if produced_indices else completion_idx
         idle_days = 0
         for day_idx in production_workday_indices:
-            if day_idx > last_relevant_idx:
+            if day_idx > completion_idx:
                 break
             day_capacity = int(daily_shift_capacity[day_idx])
             if day_capacity <= 0:
@@ -982,7 +971,7 @@ def schedule_engine(
                     allow_partial=True,
                 )
             else:
-                actual = day_capacity
+                actual = min(day_capacity, remaining)
                 candidate_shifts[shift_idx]["daily_prod"][day_idx] = int(actual)
                 daily_scheduled[day_idx] += int(actual)
             remaining -= actual
@@ -990,12 +979,12 @@ def schedule_engine(
                 candidate_shifts[shift_idx]["daily_prod"][day_idx] = "当日放空"
             return actual
 
-        # 老班组按日期正排：每天先排满班组1，再排班组2，最后依次处理后续老班组。
-        # 这样物料足够时，多个老班组从月初同步满产；物料不足时仍优先保证前序班组。
-        for day_idx in production_workday_indices:
+        # 老班组按班组优先级连续正排：先排满班组1，再排班组2，最后依次处理后续老班组。
+        # 启用物料时，每个班组仍按时间顺序消耗当日可用物料，物料不足才形成放空或尾数。
+        for shift_idx in range(old_shift_count):
             if remaining <= 0:
                 break
-            for shift_idx in range(old_shift_count):
+            for day_idx in production_workday_indices:
                 if remaining <= 0:
                     break
                 schedule_one_slot(shift_idx, day_idx)
@@ -1279,18 +1268,18 @@ def schedule_engine(
     small_gap_threshold = 2 * default_single_shift_daily
 
     # ============================
-    # 初始化班组：后续按实际启用班组数生成，避免产能过剩时保留多余班组
+    # 初始化班组：后续按实际启用班组数生成，只保留覆盖目标所需班组
     # ============================
     shifts_production = []
     run_mode = ""
 
     # ============================
-    # 场景1：产能过剩
+    # 场景1：现有老班组产能可覆盖目标
     # ============================
     final_shift_total = 0
     old_material_gap_row = None
     if demand_gap <= 0:
-        run_mode = "减少班组模式（产能过剩，正排逻辑）"
+        run_mode = "老班组优选模式（目标可覆盖，正排逻辑）"
         selected_old_count = existing_shift_count
         selected_remaining = production_target
         selected_shifts = []
@@ -1861,13 +1850,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    """
+    f"""
     <div class="hero-panel">
         <div>
             <div class="hero-title">智能排产系统</div>
             <div class="hero-subtitle">集中配置制程参数、工厂日历、单日工时、物料交期与爬坡规则，生成可执行的排产计划和结论建议。</div>
         </div>
-        <div class="hero-meta">排产配置工作台<br/>参数录入 · 计划测算 · 结果导出</div>
+        <div class="hero-meta">生产计划<br/>参数录入 · 计划测算 · 风险建议</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -2140,7 +2129,6 @@ with main_col:
                     except Exception as exc:
                         st.error(f"物料交期Excel解析失败：{exc}")
                         st.stop()
-
                 with preview_col:
                     st.markdown("<div class='material-section-title'>物料交期预览</div>", unsafe_allow_html=True)
                     st.markdown("<div class='material-muted'>展示当前排产周期内每日预计到料数量</div>", unsafe_allow_html=True)
@@ -2168,8 +2156,10 @@ with main_col:
     with st.container(border=True):
         col1, col2 = st.columns([.42, 1.58], gap="large")
         with col1:
-            selected_model = st.selectbox("选择机型", options=list(RAMP_DATA.keys()), index=0)
-            new_human_ratio = st.selectbox("选择新人占比", options=list(RAMP_DATA[selected_model].keys()), index=0)
+            default_model = list(RAMP_DATA.keys())[0]
+            selected_model = st.selectbox("选择机型", options=list(RAMP_DATA.keys()), index=list(RAMP_DATA.keys()).index(default_model))
+            default_ratio = list(RAMP_DATA[selected_model].keys())[0]
+            new_human_ratio = st.selectbox("选择新人占比", options=list(RAMP_DATA[selected_model].keys()), index=list(RAMP_DATA[selected_model].keys()).index(default_ratio))
         with col2:
             current_ramp_curve = RAMP_DATA[selected_model][new_human_ratio]
             ramp_df = pd.DataFrame({
@@ -2301,7 +2291,7 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
             elif insight_summary["shortage"] > 0:
                 metric_col2.metric("目标差异", f"缺口 {insight_summary['shortage']:,}")
             else:
-                metric_col2.metric("目标差异", f"余量 {insight_summary['surplus']:,}")
+                metric_col2.metric("目标差异", "已达成")
             metric_col3.metric(
                 "启用班组",
                 f"老{insight_summary['old_shift_count']} / 新{insight_summary['new_shift_count']}",
