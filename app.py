@@ -1528,6 +1528,13 @@ def schedule_engine(
         if demand_gap <= 0:
             fill_old_shifts_forward_to_target()
             prioritize_old_shifts_and_cap_material()
+            converted_count, _, _ = convert_non_continuous_old_shifts_to_new()
+            prioritize_old_shifts_and_cap_material()
+            if converted_count > 0:
+                rebuild_new_shifts_to_target()
+                prioritize_old_shifts_and_cap_material()
+                rebalance_new_output_to_last_old_shift_if_within_delay()
+                prioritize_old_shifts_and_cap_material()
             convert_last_old_shift_to_new_if_delay_exceeds()
             prioritize_old_shifts_and_cap_material()
         else:
