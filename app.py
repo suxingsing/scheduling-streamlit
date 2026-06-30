@@ -59,6 +59,16 @@ def get_previous_workday(base_date, days_to_go_back, rest_dates_set):
             count += 1
     return current_date
 
+def get_next_workday(base_date, days_to_go_forward, rest_dates_set):
+    """从基准日期往后数N个工作日，返回目标日期"""
+    current_date = base_date
+    count = 0
+    while count < days_to_go_forward:
+        current_date += timedelta(days=1)
+        if current_date not in rest_dates_set:
+            count += 1
+    return current_date
+
 def short_date_label(d):
     return f"{d.month}月{d.day}日"
 
@@ -694,8 +704,8 @@ def schedule_engine(
     if production_target == 0:
         return pd.DataFrame(), "生产目标为0，无需排产", "", production_target, 0, default_single_shift_daily, 0, demand_end_date, 0, []
 
-    # 成品转化 Lead Time 按自然日计算，休息日也计入转换周期。
-    production_end_date = demand_end_date - timedelta(days=int(lead_time_days))
+    # 成品转化 Lead Time 按工作日计算，休息日不计入转换周期。
+    production_end_date = get_previous_workday(demand_end_date, int(lead_time_days), rest_dates_set)
     full_date_list = generate_full_date_list(schedule_start_date, demand_end_date)
     total_days = len(full_date_list)
     if total_days == 0:
@@ -1387,12 +1397,13 @@ def schedule_engine(
         current_cum += val
         cumulative_row.append(current_cum)
 
-    # 成品转化累计：Lead Time 按自然日偏移，T 日生产在 T+Lead Time 日转化。
+    # 成品转化累计：Lead Time 按工作日偏移，T 日生产在 T+Lead Time 个工作日后转化。
     convert_row = [int(initial_stock)]
     convert_additions = [0] * total_days
     for prod_idx, qty in enumerate(daily_total):
-        complete_idx = prod_idx + int(lead_time_days)
-        if complete_idx < total_days:
+        complete_date = get_next_workday(full_date_list[prod_idx], int(lead_time_days), rest_dates_set)
+        complete_idx = date_to_idx.get(complete_date)
+        if complete_idx is not None:
             convert_additions[complete_idx] += int(qty)
 
     convert_cum = int(initial_stock)
@@ -1938,7 +1949,7 @@ with main_col:
         capability_col, hours_col, capacity_col = st.columns([1, 1, 1], gap="large")
         with capability_col:
             st.markdown("<div class='form-section-kicker'>PROCESS</div><div class='form-section-title'>基础能力</div><div class='form-section-copy'>设置制程转换提前期和单班组小时产出。</div>", unsafe_allow_html=True)
-            lead_time_days = st.number_input("成品转化Lead Time(自然日)", min_value=0, value=0)
+            lead_time_days = st.number_input("成品转化Lead Time(工作日)", min_value=0, value=0)
             uph_base = st.number_input("单班组UPH", min_value=0, value=0)
         with hours_col:
             st.markdown("<div class='form-section-kicker'>HOURS</div><div class='form-section-title'>工时策略</div><div class='form-section-copy'>统一工时适合稳定节奏，按日期编辑适合爬坡或临时调整。</div>", unsafe_allow_html=True)
@@ -2258,7 +2269,7 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
     st.markdown(f"- **现有班组总产能**：{total_exist_capacity:,}")
     st.markdown(f"- **周期有效工作日**：{total_workdays}天")
     st.markdown(f"- **需求最终截止日**：{demand_end_date.month}月{demand_end_date.day}日")
-    st.markdown(f"- **生产必须完成截止日**：{production_end_date.month}月{production_end_date.day}日（提前{lead_time_days}个自然日，包含休息日）")
+    st.markdown(f"- **生产必须完成截止日**：{production_end_date.month}月{production_end_date.day}日（提前{lead_time_days}个工作日，休息日不计入）")
     st.divider()
 
     if mode == "small_gap":
