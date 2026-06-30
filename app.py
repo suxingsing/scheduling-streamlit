@@ -1240,9 +1240,8 @@ def schedule_engine(
                 return 0, 0, 0
         for idx, shift in enumerate(old_shifts):
             if material_enabled and idx == len(old_shifts) - 1:
-                idle_days = count_last_old_shift_delay_days(shift)
-            else:
-                idle_days = count_idle_before_completion(shift, daily_scheduled)
+                continue
+            idle_days = count_idle_before_completion(shift, daily_scheduled)
             if idle_days > 7:
                 first_convert_idx = idx
                 break
@@ -1319,6 +1318,124 @@ def schedule_engine(
         return remaining_after_new, new_total
 
     # 产能计算
+    def rebalance_new_output_to_last_old_shift_if_within_delay():
+        nonlocal daily_scheduled, remaining_demand, final_shift_total, run_mode, message
+
+        if not material_enabled:
+            return False
+
+        old_shifts = [shift for shift in shifts_production if not shift["is_new"]]
+        new_shifts = [shift for shift in shifts_production if shift["is_new"]]
+        if not old_shifts or not new_shifts:
+            return False
+
+        last_old_shift = old_shifts[-1]
+        target_qty = sum(numeric_prod(last_old_shift["daily_prod"][day_idx]) for day_idx in range(total_days))
+        target_qty += sum(
+            numeric_prod(shift["daily_prod"][day_idx])
+            for shift in new_shifts
+            for day_idx in range(total_days)
+        )
+        if target_qty <= 0:
+            return False
+
+        simulated = [
+            sum(
+                numeric_prod(shift["daily_prod"][day_idx])
+                for shift in old_shifts
+                if id(shift) != id(last_old_shift)
+            )
+            for day_idx in range(total_days)
+        ]
+        candidate_daily = [""] * total_days
+        remaining = int(target_qty)
+
+        for day_idx in production_workday_indices:
+            if remaining <= 0:
+                break
+            day_capacity = int(daily_shift_capacity[day_idx])
+            if day_capacity <= 0:
+                continue
+            available_qty = max(0, material_available_at_day_start(day_idx, simulated) - int(simulated[day_idx]))
+            actual = min(day_capacity, available_qty, remaining)
+            if actual <= 0:
+                continue
+            candidate_daily[day_idx] = int(actual)
+            simulated[day_idx] += int(actual)
+            remaining -= int(actual)
+
+        if remaining > 0:
+            return False
+
+        produced_indices = [
+            day_idx for day_idx in production_workday_indices
+            if numeric_prod(candidate_daily[day_idx]) > 0
+        ]
+        if not produced_indices:
+            return False
+        ideal_start_idx = produced_indices[0]
+        ideal_completion_idx = ideal_completion_day_for_shift_qty(target_qty, ideal_start_idx)
+        actual_completion_idx = produced_indices[-1]
+        if ideal_completion_idx is None:
+            return False
+        ideal_days = count_capacity_workdays_between(ideal_start_idx, ideal_completion_idx)
+        actual_days = count_capacity_workdays_between(ideal_start_idx, actual_completion_idx)
+        delay_days = max(0, actual_days - ideal_days)
+        if delay_days > 7:
+            return False
+
+        last_old_shift["daily_prod"] = candidate_daily
+        new_ids = {id(shift) for shift in new_shifts}
+        shifts_production[:] = [shift for shift in shifts_production if id(shift) not in new_ids]
+        daily_scheduled = simulated
+        remaining_demand = 0
+        final_shift_total = 0
+        run_mode = "场景三：物料间歇缺口，保留老班组放空并后续补产"
+        message = f"✅ 排产完成 | {run_mode} | 最后一个老班组缺料放空{delay_days}天，未超过7天，保留老班组"
+        return True
+
+    def convert_last_old_shift_to_new_if_delay_exceeds():
+        nonlocal daily_scheduled, remaining_demand, final_shift_total, run_mode, message
+
+        if not material_enabled:
+            return 0, 0, 0
+
+        old_shifts = [shift for shift in shifts_production if not shift["is_new"]]
+        new_shifts = [shift for shift in shifts_production if shift["is_new"]]
+        if not old_shifts or new_shifts:
+            return 0, 0, 0
+
+        last_old_shift = old_shifts[-1]
+        target_qty = sum(numeric_prod(last_old_shift["daily_prod"][day_idx]) for day_idx in range(total_days))
+        if target_qty <= 0:
+            return 0, 0, 0
+
+        delay_days = count_last_old_shift_delay_days(last_old_shift)
+        if delay_days <= 7:
+            return 0, target_qty, delay_days
+
+        shifts_production[:] = [shift for shift in shifts_production if id(shift) != id(last_old_shift)]
+        daily_scheduled = [
+            sum(numeric_prod(shift["daily_prod"][day_idx]) for shift in shifts_production)
+            for day_idx in range(total_days)
+        ]
+
+        remaining_after_new, new_total = add_new_reverse_shifts(target_qty, reset_existing=False)
+        final_shift_total += new_total
+        remaining_demand += remaining_after_new
+        run_mode = "场景二/四：物料连续缺口，老班组顺序正排 + 新班组爬坡倒排模式"
+        if remaining_after_new > 0:
+            message = (
+                f"⚠️ 排产未完全覆盖 | {run_mode} | 最后一个老班组因缺料放空超过7天，"
+                f"转新班组后仍有{remaining_after_new:,}件未排完"
+            )
+        else:
+            message = (
+                f"✅ 排产完成 | {run_mode} | 最后一个老班组因缺料放空超过7天，"
+                f"已按新班组爬坡倒排处理"
+            )
+        return 1, new_total, delay_days
+
     capacity_1_shift_full = sum(int(daily_shift_capacity[idx]) for idx in production_workday_indices)
     total_exist_capacity = capacity_1_shift_full * existing_shift_count
     demand_gap = production_target - total_exist_capacity
@@ -1407,6 +1524,10 @@ def schedule_engine(
         convert_non_continuous_old_shifts_to_new()
         prioritize_old_shifts_and_cap_material()
         rebuild_new_shifts_to_target()
+        prioritize_old_shifts_and_cap_material()
+        rebalance_new_output_to_last_old_shift_if_within_delay()
+        prioritize_old_shifts_and_cap_material()
+        convert_last_old_shift_to_new_if_delay_exceeds()
         prioritize_old_shifts_and_cap_material()
     normalize_shift_idle_display()
 
