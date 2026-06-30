@@ -894,7 +894,9 @@ def schedule_engine(
         ]
         if not produced_indices:
             return 0
-        ideal_start_idx = production_workday_indices[0]
+        # 最后一个老班组只判断它自己承担的补量段：
+        # 从该班组首次实际生产日开始，比较“物料满足时应完成的工作日跨度”和实际完成跨度。
+        ideal_start_idx = produced_indices[0]
         ideal_completion_idx = ideal_completion_day_for_shift_qty(target_qty, ideal_start_idx)
         actual_completion_idx = produced_indices[-1]
         if ideal_completion_idx is None:
