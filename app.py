@@ -558,8 +558,8 @@ def build_schedule_insights(
     elif total_exist_capacity > production_target:
         suggestions.append("当前目标已覆盖，可按业务需要复核班组启用数量或加班安排。")
 
-    if old_idle_days >= 7:
-        suggestions.append("老班组工作日放空天数达到 7 天，建议复核需求节奏、物料交期或减班策略。")
+    if old_idle_days > 7:
+        suggestions.append("老班组工作日放空天数超过 7 天，建议复核需求节奏、物料交期或减班策略。")
     elif old_idle_days > 0:
         suggestions.append("老班组存在少量工作日放空，可结合现场换线、人员调配或日工时调整进一步平滑产能。")
 
@@ -860,6 +860,48 @@ def schedule_engine(
             if is_idle or is_partial:
                 idle_days += 1
         return idle_days
+
+    def count_capacity_workdays_between(start_idx, end_idx):
+        if start_idx is None or end_idx is None or end_idx < start_idx:
+            return 0
+        return sum(
+            1
+            for day_idx in production_workday_indices
+            if start_idx <= day_idx <= end_idx and int(daily_shift_capacity[day_idx]) > 0
+        )
+
+    def ideal_completion_day_for_shift_qty(target_qty, start_idx):
+        produced = 0
+        for day_idx in production_workday_indices:
+            if day_idx < start_idx:
+                continue
+            day_capacity = int(daily_shift_capacity[day_idx])
+            if day_capacity <= 0:
+                continue
+            produced += min(day_capacity, int(target_qty) - produced)
+            if produced >= int(target_qty):
+                return day_idx
+        return None
+
+    def count_last_old_shift_delay_days(shift):
+        target_qty = sum(numeric_prod(shift["daily_prod"][day_idx]) for day_idx in range(total_days))
+        if target_qty <= 0 or not production_workday_indices:
+            return 0
+        produced_indices = [
+            day_idx
+            for day_idx in production_workday_indices
+            if numeric_prod(shift["daily_prod"][day_idx]) > 0
+        ]
+        if not produced_indices:
+            return 0
+        ideal_start_idx = production_workday_indices[0]
+        ideal_completion_idx = ideal_completion_day_for_shift_qty(target_qty, ideal_start_idx)
+        actual_completion_idx = produced_indices[-1]
+        if ideal_completion_idx is None:
+            return count_capacity_workdays_between(ideal_start_idx, actual_completion_idx)
+        ideal_days = count_capacity_workdays_between(ideal_start_idx, ideal_completion_idx)
+        actual_days = count_capacity_workdays_between(ideal_start_idx, actual_completion_idx)
+        return max(0, actual_days - ideal_days)
 
     def can_place_sequence(start_pos, prod_sequence, scheduled_snapshot):
         simulated = scheduled_snapshot[:]
@@ -1195,8 +1237,11 @@ def schedule_engine(
             if current_material_gap and min(current_material_gap) > 0:
                 return 0, 0, 0
         for idx, shift in enumerate(old_shifts):
-            idle_days = count_idle_before_completion(shift, daily_scheduled)
-            if idle_days >= 7:
+            if material_enabled and idx == len(old_shifts) - 1:
+                idle_days = count_last_old_shift_delay_days(shift)
+            else:
+                idle_days = count_idle_before_completion(shift, daily_scheduled)
+            if idle_days > 7:
                 first_convert_idx = idx
                 break
         if first_convert_idx is None:
@@ -1227,12 +1272,12 @@ def schedule_engine(
             run_mode = "场景二/四：物料连续缺口，老班组顺序正排 + 新班组爬坡倒排模式"
             message = (
                 f"✅ 排产完成 | {run_mode} | 第{first_convert_idx + 1}个及后续老班组"
-                f"生产完成前累计放空达到7天，已按新班组爬坡倒排处理"
+                f"生产完成前累计放空超过7天，已按新班组爬坡倒排处理"
             )
         if remaining_after_new > 0:
             message = (
                 f"⚠️ 排产未完全覆盖 | {run_mode} | 第{first_convert_idx + 1}个及后续老班组"
-                f"生产完成前累计放空达到7天，转新班组后仍有{remaining_after_new:,}件未排完"
+                f"生产完成前累计放空超过7天，转新班组后仍有{remaining_after_new:,}件未排完"
             )
         return converted_count, converted_qty, remaining_after_new
 
@@ -2099,13 +2144,11 @@ with main_col:
                             label_visibility="collapsed",
                         )
                         if uploaded_material_file is not None:
-                            spacer_col, delete_col = st.columns([0.68, 0.32], gap="small")
-                            with delete_col:
-                                delete_uploaded_material = st.button(
-                                    "删除文件",
-                                    key=f"delete_material_upload_{st.session_state.material_upload_nonce}",
-                                    use_container_width=True,
-                                )
+                            delete_uploaded_material = st.button(
+                                "删除文件",
+                                key=f"delete_material_upload_{st.session_state.material_upload_nonce}",
+                                use_container_width=True,
+                            )
                             if delete_uploaded_material:
                                 st.session_state.material_upload_nonce += 1
                                 st.rerun()
