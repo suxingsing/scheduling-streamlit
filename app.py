@@ -470,6 +470,7 @@ def build_schedule_insights(
     material_schedule_enabled,
     material_warnings,
     mode,
+    idle_convert_threshold_days=5,
 ):
     """基于排产结果表生成结论和建议，避免只展示明细表。"""
     if schedule_df.empty:
@@ -558,8 +559,8 @@ def build_schedule_insights(
     elif total_exist_capacity > production_target:
         suggestions.append("当前目标已覆盖，可按业务需要复核班组启用数量或加班安排。")
 
-    if old_idle_days > 7:
-        suggestions.append("老班组工作日放空天数超过 7 天，建议复核需求节奏、物料交期或减班策略。")
+    if old_idle_days > idle_convert_threshold_days:
+        suggestions.append(f"老班组工作日放空天数超过 {idle_convert_threshold_days} 天，建议复核需求节奏、物料交期或减班策略。")
     elif old_idle_days > 0:
         suggestions.append("老班组存在少量工作日放空，可结合现场换线、人员调配或日工时调整进一步平滑产能。")
 
@@ -692,7 +693,8 @@ def schedule_engine(
     material_initial_stock, material_plan_df,
     selected_model, new_human_ratio,
     material_enabled=True,
-    work_hours_plan_df=None
+    work_hours_plan_df=None,
+    idle_convert_threshold_days=5,
 ):
     # 生产总目标
     production_target = max(total_demand + special_occupy - initial_stock, 0)
@@ -734,6 +736,14 @@ def schedule_engine(
     if material_enabled:
         material_plan, invalid_material_rows = parse_material_plan(material_plan_df)
         material_arrivals = [int(material_plan.get(d, 0)) for d in full_date_list]
+        effective_material_arrivals = [0] * total_days
+        for arrival_idx, qty in enumerate(material_arrivals):
+            if int(qty) <= 0:
+                continue
+            available_date = get_next_workday(full_date_list[arrival_idx], 1, rest_dates_set)
+            available_idx = date_to_idx.get(available_date)
+            if available_idx is not None:
+                effective_material_arrivals[available_idx] += int(qty)
         ignored_material_dates = sorted(d for d in material_plan if d not in set(full_date_list))
         material_total_available = max(0, int(material_initial_stock)) + sum(max(0, int(qty)) for qty in material_arrivals)
         if material_total_available < int(production_target):
@@ -743,6 +753,7 @@ def schedule_engine(
     else:
         invalid_material_rows = 0
         material_arrivals = [0] * total_days
+        effective_material_arrivals = [0] * total_days
         ignored_material_dates = []
     daily_scheduled = [0] * total_days
 
@@ -750,9 +761,9 @@ def schedule_engine(
         if not material_enabled:
             return 10**18
         # 当日可用物料 = 前一天累计物料gap + 前一天预计到料数量。
-        available_qty = int(material_initial_stock)
+        available_qty = int(material_initial_stock) + int(effective_material_arrivals[day_idx])
         for idx in range(day_idx):
-            available_qty = available_qty - int(scheduled_snapshot[idx]) + int(material_arrivals[idx])
+            available_qty = available_qty - int(scheduled_snapshot[idx]) + int(effective_material_arrivals[idx])
         return available_qty
 
     def available_material_for_day(day_idx):
@@ -1242,7 +1253,7 @@ def schedule_engine(
             if material_enabled and idx == len(old_shifts) - 1:
                 continue
             idle_days = count_idle_before_completion(shift, daily_scheduled)
-            if idle_days > 7:
+            if idle_days > idle_convert_threshold_days:
                 first_convert_idx = idx
                 break
         if first_convert_idx is None:
@@ -1273,12 +1284,12 @@ def schedule_engine(
             run_mode = "场景二/四：物料连续缺口，老班组顺序正排 + 新班组爬坡倒排模式"
             message = (
                 f"✅ 排产完成 | {run_mode} | 第{first_convert_idx + 1}个及后续老班组"
-                f"生产完成前累计放空超过7天，已按新班组爬坡倒排处理"
+                f"生产完成前累计放空超过{idle_convert_threshold_days}天，已按新班组爬坡倒排处理"
             )
         if remaining_after_new > 0:
             message = (
                 f"⚠️ 排产未完全覆盖 | {run_mode} | 第{first_convert_idx + 1}个及后续老班组"
-                f"生产完成前累计放空超过7天，转新班组后仍有{remaining_after_new:,}件未排完"
+                f"生产完成前累计放空超过{idle_convert_threshold_days}天，转新班组后仍有{remaining_after_new:,}件未排完"
             )
         return converted_count, converted_qty, remaining_after_new
 
@@ -1381,7 +1392,7 @@ def schedule_engine(
         ideal_days = count_capacity_workdays_between(ideal_start_idx, ideal_completion_idx)
         actual_days = count_capacity_workdays_between(ideal_start_idx, actual_completion_idx)
         delay_days = max(0, actual_days - ideal_days)
-        if delay_days > 7:
+        if delay_days > idle_convert_threshold_days:
             return False
 
         last_old_shift["daily_prod"] = candidate_daily
@@ -1391,7 +1402,7 @@ def schedule_engine(
         remaining_demand = 0
         final_shift_total = 0
         run_mode = "场景三：物料间歇缺口，保留老班组放空并后续补产"
-        message = f"✅ 排产完成 | {run_mode} | 最后一个老班组缺料放空{delay_days}天，未超过7天，保留老班组"
+        message = f"✅ 排产完成 | {run_mode} | 最后一个老班组缺料放空{delay_days}天，未超过{idle_convert_threshold_days}天，保留老班组"
         return True
 
     def convert_last_old_shift_to_new_if_delay_exceeds():
@@ -1411,7 +1422,7 @@ def schedule_engine(
             return 0, 0, 0
 
         delay_days = count_last_old_shift_delay_days(last_old_shift)
-        if delay_days <= 7:
+        if delay_days <= idle_convert_threshold_days:
             return 0, target_qty, delay_days
 
         shifts_production[:] = [shift for shift in shifts_production if id(shift) != id(last_old_shift)]
@@ -1426,12 +1437,12 @@ def schedule_engine(
         run_mode = "场景二/四：物料连续缺口，老班组顺序正排 + 新班组爬坡倒排模式"
         if remaining_after_new > 0:
             message = (
-                f"⚠️ 排产未完全覆盖 | {run_mode} | 最后一个老班组因缺料放空超过7天，"
+                f"⚠️ 排产未完全覆盖 | {run_mode} | 最后一个老班组因缺料放空超过{idle_convert_threshold_days}天，"
                 f"转新班组后仍有{remaining_after_new:,}件未排完"
             )
         else:
             message = (
-                f"✅ 排产完成 | {run_mode} | 最后一个老班组因缺料放空超过7天，"
+                f"✅ 排产完成 | {run_mode} | 最后一个老班组因缺料放空超过{idle_convert_threshold_days}天，"
                 f"已按新班组爬坡倒排处理"
             )
         return 1, new_total, delay_days
@@ -1514,16 +1525,22 @@ def schedule_engine(
 
     prioritize_old_shifts_and_cap_material()
     if material_enabled:
-        top_up_unfinished_target_with_old_shifts()
-        prioritize_old_shifts_and_cap_material()
-        convert_non_continuous_old_shifts_to_new()
-        prioritize_old_shifts_and_cap_material()
-        rebuild_new_shifts_to_target()
-        prioritize_old_shifts_and_cap_material()
-        rebalance_new_output_to_last_old_shift_if_within_delay()
-        prioritize_old_shifts_and_cap_material()
-        convert_last_old_shift_to_new_if_delay_exceeds()
-        prioritize_old_shifts_and_cap_material()
+        if demand_gap <= 0:
+            fill_old_shifts_forward_to_target()
+            prioritize_old_shifts_and_cap_material()
+            convert_last_old_shift_to_new_if_delay_exceeds()
+            prioritize_old_shifts_and_cap_material()
+        else:
+            top_up_unfinished_target_with_old_shifts()
+            prioritize_old_shifts_and_cap_material()
+            convert_non_continuous_old_shifts_to_new()
+            prioritize_old_shifts_and_cap_material()
+            rebuild_new_shifts_to_target()
+            prioritize_old_shifts_and_cap_material()
+            rebalance_new_output_to_last_old_shift_if_within_delay()
+            prioritize_old_shifts_and_cap_material()
+            convert_last_old_shift_to_new_if_delay_exceeds()
+            prioritize_old_shifts_and_cap_material()
     normalize_shift_idle_display()
 
     # ============================
@@ -2114,6 +2131,7 @@ with main_col:
             st.markdown("<div class='form-section-kicker'>PROCESS</div><div class='form-section-title'>基础能力</div><div class='form-section-copy'>设置制程转换提前期和单班组小时产出。</div>", unsafe_allow_html=True)
             lead_time_days = st.number_input("成品转化Lead Time(工作日)", min_value=0, value=0)
             uph_base = st.number_input("单班组UPH", min_value=0, value=0)
+            idle_convert_threshold_days = st.number_input("放空转新阈值(工作日)", min_value=0, max_value=30, value=5, step=1)
         with hours_col:
             st.markdown("<div class='form-section-kicker'>HOURS</div><div class='form-section-title'>工时策略</div><div class='form-section-copy'>统一工时适合稳定节奏，按日期编辑适合爬坡或临时调整。</div>", unsafe_allow_html=True)
             work_hours_mode = st.radio(
@@ -2272,13 +2290,13 @@ with main_col:
                                 st.rerun()
                     st.markdown("<div class='material-action-spacer'></div>", unsafe_allow_html=True)
                     st.markdown("<div class='material-section-title'>到料规则</div>", unsafe_allow_html=True)
-                    st.markdown("<div class='material-muted'>排产前按自然日偏移核算可用物料</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='material-muted'>排产前按工厂工作日偏移核算可用物料</div>", unsafe_allow_html=True)
                     st.markdown(
                         """
                         <div class="material-rule-panel">
                             <ol>
-                                <li><strong>到料次日可用：</strong>T 日到厂物料，最早从 T+1 日投入排产。</li>
-                                <li><strong>排产前核算：</strong>当日可用物料 = 前一天物料 gap + 前一天预计到料数量。</li>
+                                <li><strong>到料下个工作日可用：</strong>T 日到厂物料，最早从第 03 步工厂日历里的下一个工作日投入排产。</li>
+                                <li><strong>排产前核算：</strong>当日可用物料 = 上一个排产日结余物料 + 当日已生效到料数量。</li>
                             </ol>
                         </div>
                         """,
@@ -2399,6 +2417,7 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
         new_human_ratio=new_human_ratio,
         material_enabled=material_schedule_enabled,
         work_hours_plan_df=work_hours_plan_df,
+        idle_convert_threshold_days=idle_convert_threshold_days,
     )
 
     # 加班 / 减班优化提示
@@ -2414,8 +2433,6 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
     )
     if can_optimize:
         st.warning(optimize_suggest)
-    for msg in material_warnings:
-        st.warning(msg)
 
     # 核心计算结果
     st.markdown("### 核心计算结果")
@@ -2441,6 +2458,7 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
         st.warning("排产未完全覆盖")
     else:
         st.success("排产完成")
+    if "错误" not in message:
         insight_summary, conclusions, suggestions = build_schedule_insights(
             schedule_df=schedule_df,
             production_target=production_target,
@@ -2453,6 +2471,7 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
             material_schedule_enabled=material_schedule_enabled,
             material_warnings=material_warnings,
             mode=mode,
+            idle_convert_threshold_days=idle_convert_threshold_days,
         )
         if insight_summary:
             st.markdown("### 排产结论与建议")
@@ -2499,3 +2518,5 @@ if st.button(f"开始【{selected_process}】制程排产", type="primary", use_
             file_name=f"{selected_process}制程_智能排产计划表_{datetime.now().strftime('%Y%m%d%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+        for msg in material_warnings:
+            st.warning(msg)
