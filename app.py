@@ -1484,11 +1484,6 @@ def schedule_engine(
 
         old_material_gap_row = calc_material_gap_row(daily_scheduled)
         idle_days = count_old_shift_idle_days()
-        if material_enabled and remaining_demand > 0:
-            old_shift_count_after = len(shifts_production)
-            remaining_demand, final_shift_total = add_new_reverse_shifts(remaining_demand, reset_existing=False)
-            if old_shift_count_after and final_shift_total > 0:
-                run_mode = "老班组正排 + 新班组连续倒排模式"
 
         if remaining_demand > 0:
             message = f"⚠️ 排产未完全覆盖 | {run_mode} | 受物料交期或生产窗口约束，仍有{remaining_demand:,}件未排完"
