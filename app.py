@@ -558,8 +558,8 @@ def build_schedule_insights(
     elif total_exist_capacity > production_target:
         suggestions.append("当前目标已覆盖，可按业务需要复核班组启用数量或加班安排。")
 
-    if old_idle_days >= 7:
-        suggestions.append("老班组工作日放空天数达到 7 天，建议复核需求节奏、物料交期或减班策略。")
+    if old_idle_days > 7:
+        suggestions.append("老班组工作日放空天数超过 7 天，建议复核需求节奏、物料交期或减班策略。")
     elif old_idle_days > 0:
         suggestions.append("老班组存在少量工作日放空，可结合现场换线、人员调配或日工时调整进一步平滑产能。")
 
@@ -860,6 +860,26 @@ def schedule_engine(
             if is_idle or is_partial:
                 idle_days += 1
         return idle_days
+
+    def count_material_wait_before_completion(shift, scheduled_snapshot):
+        completion_idx = target_completion_day(scheduled_snapshot)
+        wait_days = 0
+        for day_idx in production_workday_indices:
+            if day_idx > completion_idx:
+                break
+            day_capacity = int(daily_shift_capacity[day_idx])
+            if day_capacity <= 0:
+                continue
+            val = shift["daily_prod"][day_idx]
+            is_idle = str(val).strip() == "" or val == "当日放空"
+            is_partial = isinstance(val, (int, float)) and int(val) < day_capacity
+            if not (is_idle or is_partial):
+                continue
+            available_at_start = material_available_at_day_start(day_idx, scheduled_snapshot)
+            day_scheduled = int(scheduled_snapshot[day_idx])
+            if available_at_start <= day_scheduled:
+                wait_days += 1
+        return wait_days
 
     def can_place_sequence(start_pos, prod_sequence, scheduled_snapshot):
         simulated = scheduled_snapshot[:]
@@ -1196,7 +1216,13 @@ def schedule_engine(
                 return 0, 0, 0
         for idx, shift in enumerate(old_shifts):
             idle_days = count_idle_before_completion(shift, daily_scheduled)
-            if idle_days >= 7:
+            if material_enabled and idx == len(old_shifts) - 1:
+                material_wait_days = count_material_wait_before_completion(shift, daily_scheduled)
+                non_material_idle_days = max(0, idle_days - material_wait_days)
+                should_convert = material_wait_days > 7 or non_material_idle_days > 7
+            else:
+                should_convert = idle_days > 7
+            if should_convert:
                 first_convert_idx = idx
                 break
         if first_convert_idx is None:
@@ -1227,12 +1253,12 @@ def schedule_engine(
             run_mode = "场景二/四：物料连续缺口，老班组顺序正排 + 新班组爬坡倒排模式"
             message = (
                 f"✅ 排产完成 | {run_mode} | 第{first_convert_idx + 1}个及后续老班组"
-                f"生产完成前累计放空达到7天，已按新班组爬坡倒排处理"
+                f"生产完成前累计放空超过7天，已按新班组爬坡倒排处理"
             )
         if remaining_after_new > 0:
             message = (
                 f"⚠️ 排产未完全覆盖 | {run_mode} | 第{first_convert_idx + 1}个及后续老班组"
-                f"生产完成前累计放空达到7天，转新班组后仍有{remaining_after_new:,}件未排完"
+                f"生产完成前累计放空超过7天，转新班组后仍有{remaining_after_new:,}件未排完"
             )
         return converted_count, converted_qty, remaining_after_new
 
